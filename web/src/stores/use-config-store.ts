@@ -527,6 +527,12 @@ export function normalizeLocalProxyUrl(value: string) {
 export function withLocalProxy(url: string) {
     const { proxyEnabled, proxyUrl } = useConfigStore.getState().config;
     if (!proxyEnabled || !/^https?:\/\//i.test(url)) return url;
+    if (typeof window !== "undefined") {
+        try {
+            const target = new URL(url);
+            if (target.origin === window.location.origin && /^\/collaboration\/rooms\/[^/]+\/ai(?:\/|$)/.test(target.pathname)) return url;
+        } catch {} // Let invalid URLs keep the existing downstream request error.
+    }
     const base = normalizeLocalProxyUrl(proxyUrl);
     if (!base || url.startsWith(`${base}/`)) return url;
     return `${base}/${url}`;

@@ -1,4 +1,4 @@
-import { defaultConfig, resolveModelForCapability, type AiConfig } from "@/stores/use-config-store";
+import { defaultConfig, encodeChannelModel, modelOptionName, resolveModelForCapability, type AiConfig } from "@/stores/use-config-store";
 import i18n from "@/i18n";
 import { ensureImagePreview, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { resolveMediaUrl } from "@/services/file-storage";
@@ -48,11 +48,11 @@ export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
             const metadata = node.metadata;
             const content = metadata?.content;
             if ((node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) && metadata?.storageKey) return { ...node, metadata: { ...metadata, content: await resolveMediaUrl(metadata.storageKey, content) } };
-            if (node.type !== CanvasNodeType.Image || !metadata || !content) return node;
+            if (node.type !== CanvasNodeType.Image || !metadata) return node;
             const images = await Promise.all(
                 (metadata.images || []).map(async (image) => {
-                    if (!image.content) return image;
-                    void ensureImagePreview(image.storageKey);
+                    if (!image.storageKey && !image.content) return image;
+                    if (image.storageKey) void ensureImagePreview(image.storageKey);
                     return { ...image, content: await resolveImageUrl(image.storageKey, image.content) };
                 }),
             );
@@ -60,8 +60,8 @@ export async function hydrateCanvasImages(nodes: CanvasNodeData[]) {
                 void ensureImagePreview(metadata.storageKey);
                 return { ...node, metadata: { ...metadata, content: await resolveImageUrl(metadata.storageKey, content), images } };
             }
-            if (!content.startsWith("data:image/")) return node;
-            return { ...node, metadata: { ...metadata, ...imageMetadata(await uploadImage(content)) } };
+            if (!content?.startsWith("data:image/")) return images.length ? { ...node, metadata: { ...metadata, images } } : node;
+            return { ...node, metadata: { ...metadata, ...imageMetadata(await uploadImage(content)), images } };
         }),
     );
 }
@@ -92,6 +92,13 @@ export function getGenerationCount(count: string) {
     return Math.max(1, Math.min(15, Math.floor(Math.abs(Number(count)) || 1)));
 }
 
+export function rebindSharedImageModel(config: AiConfig, value?: string) {
+    const channel = config.channels.length === 1 ? config.channels[0] : undefined;
+    if (!channel?.id.startsWith("shared-room-") || !value) return value;
+    const name = modelOptionName(value);
+    return channel.models.some((model) => model.capability === "image" && model.name === name) ? encodeChannelModel(channel.id, name) : value;
+}
+
 export function getInputSummary(inputs: NodeGenerationInput[]) {
     const resources = [...new Map(inputs.flatMap((input) => (input.type === "group" ? input.children : [input])).map((input) => [input.nodeId, input])).values()];
     return {
@@ -105,7 +112,7 @@ export function getInputSummary(inputs: NodeGenerationInput[]) {
 export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | undefined, mode: CanvasNodeGenerationMode): AiConfig {
     return {
         ...config,
-        model: resolveModelForCapability(config, node?.metadata?.model, mode),
+        model: resolveModelForCapability(config, mode === "image" ? rebindSharedImageModel(config, node?.metadata?.model) : node?.metadata?.model, mode),
         reasoningEffort: node?.metadata?.reasoningEffort || config.reasoningEffort || defaultConfig.reasoningEffort,
         quality: node?.metadata?.quality || config.quality || defaultConfig.quality,
         size: node?.metadata?.size || config.size || defaultConfig.size,

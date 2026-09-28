@@ -8,7 +8,7 @@ import { useTranslation } from "react-i18next";
 import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { createVideoGenerationTask, isVideoTaskFailed, storeGeneratedVideo, waitForVideoGenerationTask } from "@/services/api/video";
-import { defaultConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { defaultConfig, modelOptionsFromChannels, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { ensureImagePreview, uploadImage } from "@/services/image-storage";
 import { uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { nanoid } from "nanoid";
@@ -208,6 +208,15 @@ function InfiniteCanvasPage() {
 
     const config = useConfigStore((state) => state.config);
     const effectiveConfig = useEffectiveConfig();
+    const sharedRoomId = searchParams.get("collab") || "";
+    const imageRequestConfig = useMemo(() => {
+        if (!sharedRoomId) return effectiveConfig;
+        const channel = effectiveConfig.channels.find((item) => item.id === `shared-room-${sharedRoomId}`);
+        const model = channel?.models.find((item) => item.capability === "image");
+        return channel && model
+            ? { ...effectiveConfig, channels: [channel], models: modelOptionsFromChannels([channel]), imageModel: `${channel.id}::${model.name}` }
+            : null;
+    }, [effectiveConfig, sharedRoomId]);
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const addAsset = useAssetStore((state) => state.addAsset);
@@ -864,6 +873,7 @@ function InfiniteCanvasPage() {
 
     const { pluginHost, renderPluginPanel, buildNodeToolbarItems } = usePluginHost({
         effectiveConfig,
+        imageRequestConfig,
         isAiConfigReady,
         openConfigDialog,
         theme,
@@ -2026,7 +2036,11 @@ function InfiniteCanvasPage() {
     const maskEditImageNode = useCallback(
         async (node: CanvasNodeData, payload: CanvasImageMaskEditPayload) => {
             if (!node.metadata?.content) return;
-            const generationConfig = { ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1", size: node.metadata?.size || "auto" };
+            if (payload.generate && !imageRequestConfig) {
+                message.error(t("canvas.collaboration.imageProxyRequired"));
+                return;
+            }
+            const generationConfig = { ...buildGenerationConfig(imageRequestConfig || effectiveConfig, node, "image"), count: "1", size: node.metadata?.size || "auto" };
             if (payload.generate && !isAiConfigReady(generationConfig, generationConfig.model)) {
                 openConfigDialog(true);
                 return;
@@ -2089,7 +2103,7 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t],
+        [effectiveConfig, finishGenerationRequest, imageRequestConfig, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t],
     );
 
     const upscaleImageNode = useCallback(async (node: CanvasNodeData, params: CanvasImageUpscaleParams) => {
@@ -2120,7 +2134,11 @@ function InfiniteCanvasPage() {
     const generateAngleNode = useCallback(
         async (node: CanvasNodeData, params: CanvasImageAngleParams) => {
             if (!node.metadata?.content) return;
-            const generationConfig = { ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1" };
+            if (!imageRequestConfig) {
+                message.error(t("canvas.collaboration.imageProxyRequired"));
+                return;
+            }
+            const generationConfig = { ...buildGenerationConfig(imageRequestConfig, node, "image"), count: "1" };
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
                 openConfigDialog(true);
                 return;
@@ -2169,7 +2187,7 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [effectiveConfig, finishGenerationRequest, openConfigDialog, startGenerationRequest, t],
+        [finishGenerationRequest, imageRequestConfig, message, openConfigDialog, startGenerationRequest, t],
     );
 
     const handleFontSizeChange = useCallback((nodeId: string, fontSize: number) => {
@@ -2358,7 +2376,11 @@ function InfiniteCanvasPage() {
     const handleGenerateNode = useCallback(
         async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
-            const generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
+            if (mode === "image" && !imageRequestConfig) {
+                message.error(t("canvas.collaboration.imageProxyRequired"));
+                return;
+            }
+            const generationConfig = buildGenerationConfig(mode === "image" ? imageRequestConfig! : effectiveConfig, sourceNode, mode);
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
                 openConfigDialog(true);
                 return;
@@ -2785,7 +2807,7 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [completeVideoNodeTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t],
+        [completeVideoNodeTask, effectiveConfig, finishGenerationRequest, imageRequestConfig, isAiConfigReady, message, openConfigDialog, startGenerationRequest, t],
     );
     useEffect(() => {
         generateNodeRef.current = handleGenerateNode;
@@ -2800,8 +2822,13 @@ function InfiniteCanvasPage() {
             const sourceNode = findRetrySourceNode(node.id, nodesRef.current, connectionsRef.current) || node;
             const savedImageMetadata = node.type === CanvasNodeType.Image ? node.metadata : undefined;
             const hasSavedImageMetadata = Boolean(savedImageMetadata?.generationType);
+            const mode = node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image";
+            if (mode === "image" && !imageRequestConfig) {
+                message.error(t("canvas.collaboration.imageProxyRequired"));
+                return;
+            }
             const generationConfig =
-                hasSavedImageMetadata && savedImageMetadata
+                hasSavedImageMetadata && savedImageMetadata && !sharedRoomId
                     ? {
                           ...effectiveConfig,
                           model: savedImageMetadata.model || effectiveConfig.imageModel || effectiveConfig.model,
@@ -2810,7 +2837,7 @@ function InfiniteCanvasPage() {
                           background: savedImageMetadata.background ?? effectiveConfig.background,
                           count: "1",
                       }
-                    : { ...buildGenerationConfig(effectiveConfig, sourceNode, node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image"), count: "1" };
+                    : { ...buildGenerationConfig(mode === "image" ? imageRequestConfig! : effectiveConfig, hasSavedImageMetadata ? node : sourceNode, mode), count: "1" };
             if (!isAiConfigReady(generationConfig, generationConfig.model)) {
                 openConfigDialog(true);
                 return;
@@ -2942,7 +2969,7 @@ function InfiniteCanvasPage() {
                 setRunningNodeId(null);
             }
         },
-        [completeVideoNodeTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, openConfigDialog, pollVideoNodeTask, startGenerationRequest, t],
+        [completeVideoNodeTask, effectiveConfig, finishGenerationRequest, imageRequestConfig, isAiConfigReady, message, openConfigDialog, pollVideoNodeTask, sharedRoomId, startGenerationRequest, t],
     );
 
     const deleteBatchImage = useCallback((nodeId: string, imageId: string) => {

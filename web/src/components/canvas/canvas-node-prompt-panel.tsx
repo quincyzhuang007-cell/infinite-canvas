@@ -17,6 +17,7 @@ import { CanvasTextSettingsPopover } from "./canvas-text-settings-popover";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData } from "@/types/canvas";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { CanvasNodeReferenceBar } from "./canvas-node-reference-bar";
+import { rebindSharedImageModel } from "@/lib/canvas/canvas-generation-helpers";
 
 export type CanvasNodeGenerationMode = CanvasGenerationMode;
 
@@ -178,7 +179,7 @@ function defaultMode(type: CanvasNodeData["type"]): CanvasNodeGenerationMode {
 function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: CanvasNodeGenerationMode): AiConfig {
     return {
         ...globalConfig,
-        model: resolveModelForCapability(globalConfig, node.metadata?.model, mode),
+        model: resolveModelForCapability(globalConfig, mode === "image" ? rebindSharedImageModel(globalConfig, node.metadata?.model) : node.metadata?.model, mode),
         reasoningEffort: node.metadata?.reasoningEffort || globalConfig.reasoningEffort || defaultConfig.reasoningEffort,
         quality: node.metadata?.quality || globalConfig.quality || defaultConfig.quality,
         size: node.metadata?.size || globalConfig.size || defaultConfig.size,
