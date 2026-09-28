@@ -73,7 +73,7 @@ export function useCanvasCollaboration(projectId: string, project: CanvasProject
         if (["localhost", "127.0.0.1", "::1"].includes(host)) {
             info = await getCollaborationInfo();
             host = info.advertisedHost;
-            if (!host) throw new Error("没有找到本机局域网地址，请从局域网 IP 打开 Infinite Canvas 后再共享");
+            if (!host) throw new Error("无法确定共享服务访问地址，请从可被协作者访问的主机地址打开 Infinite Canvas 后再共享");
         }
         info ||= await getCollaborationInfo().catch(() => null);
         const created = await createSharedRoom(toSharedProject(project));

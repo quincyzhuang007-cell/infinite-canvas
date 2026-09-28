@@ -47,6 +47,7 @@ import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
 import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
 import { useCanvasCollaboration } from "@/pages/canvas/hooks/use-canvas-collaboration";
+import { getCollaborationInfo, startHostCodexLogin, submitHostCodexCallback } from "@/services/collaboration";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { buildNodeMentionReferences, getGroupResourceNodes, isCanvasReferenceNode, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
@@ -267,6 +268,12 @@ function InfiniteCanvasPage() {
     const [shareDialogOpen, setShareDialogOpen] = useState(false);
     const [shareInviteLink, setShareInviteLink] = useState("");
     const [shareHostAgentLink, setShareHostAgentLink] = useState("");
+    const [hostCodexLoginEnabled, setHostCodexLoginEnabled] = useState(false);
+    const [hostCodexLoginBusy, setHostCodexLoginBusy] = useState(false);
+    const [hostCodexLoginStatus, setHostCodexLoginStatus] = useState("");
+    const [hostCodexCallbackUrl, setHostCodexCallbackUrl] = useState("");
+    const [hostCodexLoginUrl, setHostCodexLoginUrl] = useState("");
+    const hostCodexLoginWindowRef = useRef<Window | null>(null);
     const [splitNodeId, setSplitNodeId] = useState<string | null>(null);
     const [upscaleNodeId, setUpscaleNodeId] = useState<string | null>(null);
     const [superResolveNodeId, setSuperResolveNodeId] = useState<string | null>(null);
@@ -519,10 +526,55 @@ function InfiniteCanvasPage() {
             const links = await collaboration.createInvitation();
             setShareInviteLink(links.canvasLink);
             setShareHostAgentLink(links.hostAgentLink);
+            setHostCodexLoginEnabled(Boolean((await getCollaborationInfo().catch(() => null))?.hostCodexLoginEnabled));
             setShareDialogOpen(true);
             copyText(links.canvasLink, t("canvas.collaboration.inviteCopied"));
         } catch (error) {
             message.error(error instanceof Error ? error.message : t("canvas.collaboration.shareFailed"));
+        }
+    };
+
+    const handleHostCodexLogin = async () => {
+        const loginWindow = window.open("about:blank", "_blank");
+        if (!loginWindow) {
+            message.error("浏览器拦截了弹窗，请允许此站点打开新窗口后重试");
+            return;
+        }
+        hostCodexLoginWindowRef.current = loginWindow;
+        loginWindow.document.title = "正在连接主机 Codex…";
+        loginWindow.document.body.innerHTML = "<main style=\"font:16px sans-serif;padding:32px;color:#555\">正在连接主机 CLIProxy，授权页面即将打开…</main>";
+        setHostCodexLoginBusy(true);
+        setHostCodexLoginStatus("正在打开 Codex 登录页…");
+        try {
+            const { url } = await startHostCodexLogin();
+            loginWindow.location.href = url;
+            setHostCodexCallbackUrl("");
+            setHostCodexLoginUrl(url);
+            setHostCodexLoginStatus("请在新窗口登录。授权后浏览器会尝试回到 localhost:1455；复制地址栏中的完整 URL，粘贴到下方确认。登录的 Codex 账号将作为主机共享账号。");
+        } catch (error) {
+            loginWindow.close();
+            hostCodexLoginWindowRef.current = null;
+            setHostCodexLoginStatus(error instanceof Error ? error.message : "Codex 登录失败");
+            message.error(error instanceof Error ? error.message : "Codex 登录失败");
+        } finally {
+            setHostCodexLoginBusy(false);
+        }
+    };
+
+    const handleHostCodexCallback = async () => {
+        if (!hostCodexLoginUrl || !hostCodexCallbackUrl.trim()) return;
+        setHostCodexLoginBusy(true);
+        try {
+            await submitHostCodexCallback(hostCodexCallbackUrl.trim());
+            setHostCodexLoginStatus("Codex 登录完成，主机 Agent 已可使用。");
+            setHostCodexLoginUrl("");
+            hostCodexLoginWindowRef.current?.close();
+            message.success("主机 Codex 登录完成");
+        } catch (error) {
+            setHostCodexLoginStatus(error instanceof Error ? error.message : "Codex 登录失败");
+            message.error(error instanceof Error ? error.message : "Codex 登录失败");
+        } finally {
+            setHostCodexLoginBusy(false);
         }
     };
 
@@ -3233,6 +3285,15 @@ function InfiniteCanvasPage() {
                         <Input aria-label={t("canvas.collaboration.hostAgentLink")} value={shareHostAgentLink} readOnly onFocus={(event) => event.currentTarget.select()} />
                         <div className="mt-3 flex justify-end">
                             <Button onClick={() => copyText(shareHostAgentLink, t("canvas.collaboration.inviteCopied"))}>{t("canvas.collaboration.copyHostAgentLink")}</Button>
+                        </div>
+                    </div>}
+                    {hostCodexLoginEnabled && <div className="mt-4 border-t pt-4" style={{ borderColor: theme.node.stroke }}>
+                        <div className="mb-2 text-xs text-stone-500">所有团队成员都可以在此登录或更换主机 Codex 账号；共享画布的主机 Agent 将使用该账号额度。</div>
+                        {hostCodexLoginStatus && <Alert className="mb-3" type={hostCodexLoginStatus.includes("完成") ? "success" : hostCodexLoginUrl ? "info" : "warning"} showIcon message={hostCodexLoginStatus} />}
+                        {hostCodexLoginUrl && <Input className="mb-3" aria-label="Codex 登录回调地址" placeholder="粘贴授权后浏览器地址栏中的完整 URL" value={hostCodexCallbackUrl} onChange={(event) => setHostCodexCallbackUrl(event.target.value)} />}
+                        <div className="flex justify-end gap-2">
+                            <Button type="primary" loading={hostCodexLoginBusy} disabled={hostCodexLoginBusy} onClick={() => void handleHostCodexLogin()}>登录主机 Codex</Button>
+                            {hostCodexLoginUrl && <Button loading={hostCodexLoginBusy} disabled={!hostCodexCallbackUrl.trim()} onClick={() => void handleHostCodexCallback()}>确认登录完成</Button>}
                         </div>
                     </div>}
                 </Modal>

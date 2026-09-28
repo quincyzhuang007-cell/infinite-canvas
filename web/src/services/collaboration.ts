@@ -21,7 +21,26 @@ export type SharedCanvasProject = Omit<CanvasProject, "chatSessions" | "activeCh
 };
 
 export type SharedRoomSnapshot = { roomId: string; revision: number; project: SharedCanvasProject; assets: string[] };
-export type CollaborationInfo = { advertisedHost: string; aiProxyEnabled: boolean; hostAgentEnabled: boolean };
+export type CollaborationInfo = { advertisedHost: string; aiProxyEnabled: boolean; hostAgentEnabled: boolean; hostCodexLoginEnabled?: boolean; teamLoginRequired?: boolean };
+
+export async function getTeamSession() {
+    const response = await fetch(`${COLLAB_PATH}/session`, { credentials: "same-origin" });
+    if (!response.ok) throw new Error("无法检查团队登录状态");
+    return (await response.json()) as { required: boolean; authenticated: boolean };
+}
+
+export async function loginTeam(username: string, password: string) {
+    const credentials = new TextEncoder().encode(`${username}:${password}`);
+    const authorization = btoa(Array.from(credentials, (byte) => String.fromCharCode(byte)).join(""));
+    const response = await fetch(`${COLLAB_PATH}/session/login`, {
+        method: "POST",
+        headers: { Authorization: `Basic ${authorization}` },
+        credentials: "same-origin",
+    });
+    const result = await response.json().catch(() => null) as { authenticated?: boolean; error?: string } | null;
+    if (!response.ok) throw new Error(result?.error || "用户名或密码错误");
+    return result?.authenticated === true;
+}
 
 export async function loadSharedBase(roomId: string): Promise<Pick<SharedRoomSnapshot, "revision" | "project"> | null> {
     try {
@@ -61,8 +80,23 @@ export function rememberedSharedRoomPath(room: RememberedSharedRoom) {
 
 export async function getCollaborationInfo() {
     const response = await fetch(`${COLLAB_PATH}/info`);
-    if (!response.ok) throw new Error("无法读取局域网地址");
+    if (!response.ok) throw new Error("无法读取共享服务信息");
     return (await response.json()) as CollaborationInfo;
+}
+
+export async function startHostCodexLogin() {
+    const response = await fetch(`${COLLAB_PATH}/host-codex-auth`);
+    if (!response.ok) throw new Error(`启动 Codex 登录失败（${response.status}）`);
+    return (await response.json()) as { url: string };
+}
+
+export async function submitHostCodexCallback(redirectUrl: string) {
+    const response = await fetch(`${COLLAB_PATH}/host-codex-auth/callback`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ redirectUrl }) });
+    if (!response.ok) {
+        const result = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(result?.error || `确认 Codex 登录失败（${response.status}）`);
+    }
+    return (await response.json()) as { status: "ok" };
 }
 
 export async function createSharedRoom(project: SharedCanvasProject) {

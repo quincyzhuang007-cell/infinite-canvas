@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
 import { parse as parseYaml } from "yaml";
+import { createTeamSessions } from "./team-sessions.mjs";
 
 const app = express();
 const server = createServer(app);
@@ -21,6 +22,9 @@ const dataDir = resolve(process.env.CANVAS_COLLAB_DATA_DIR || join(dirname(fileU
 const cliproxyConfig = await loadCliproxyConfig();
 const cliproxyUrl = normalizeCliproxyUrl(process.env.CANVAS_COLLAB_CLIPROXY_URL?.trim() || cliproxyConfig?.url || "");
 const cliproxyApiKey = process.env.CANVAS_COLLAB_CLIPROXY_API_KEY?.trim() || cliproxyConfig?.apiKey || "";
+const cliproxyManagementUrl = normalizeCliproxyUrl(process.env.CANVAS_COLLAB_CLIPROXY_MANAGEMENT_URL?.trim() || cliproxyConfig?.url || "http://127.0.0.1:8317");
+const cliproxyManagementKey = process.env.CANVAS_COLLAB_CLIPROXY_MANAGEMENT_KEY?.trim() || cliproxyConfig?.managementKey || "";
+let codexLoginState = "";
 const agentEntry = resolve(process.env.CANVAS_COLLAB_AGENT_ENTRY?.trim() || fileURLToPath(new URL("../canvas-agent/src/index.ts", import.meta.url)));
 const agentRunner = agentEntry.endsWith(".ts") ? resolve(dirname(agentEntry), "../node_modules/tsx/dist/cli.mjs") : "";
 const participantSessions = new Map();
@@ -28,6 +32,7 @@ const participantAgents = new Map();
 const participantChildren = new Set();
 const rooms = new Map();
 const roomSaves = new Map();
+const teamSessions = createTeamSessions(process.env.CANVAS_COLLAB_TEAM_LOGIN_REQUIRED === "true");
 const assetNamePattern = /^[\w:-]{1,160}$/;
 const roomIdPattern = /^[\w-]{20,64}$/;
 
@@ -35,6 +40,18 @@ await mkdir(join(dataDir, "rooms"), { recursive: true });
 await loadRooms();
 await loadParticipantSessions();
 app.disable("x-powered-by");
+app.post("/collaboration/session/login", (req, res) => {
+    if (!teamSessions.required) return res.sendStatus(404);
+    if (!String(req.headers["x-canvas-team-user"] || "").trim()) return res.status(401).json({ error: "用户名或密码错误" });
+    teamSessions.create(req, res);
+    res.json({ authenticated: true });
+});
+app.get("/collaboration/session", (req, res) => res.json({ required: teamSessions.required, authenticated: teamSessions.isAuthenticated(req) }));
+app.post("/collaboration/session/logout", (req, res) => {
+    teamSessions.clear(req, res);
+    res.sendStatus(204);
+});
+app.use("/collaboration", teamSessions.requireSession);
 app.use("/collaboration/rooms/:roomId/ai", proxySharedAi);
 app.post("/collaboration/rooms/:roomId/agent/sessions", express.json(), createParticipantSession);
 app.use("/collaboration/rooms/:roomId/agent", proxySharedAgent);
@@ -42,7 +59,35 @@ app.use(express.json({ limit: "32mb" }));
 app.get("/collaboration/info", async (_req, res) => {
     const addresses = Object.values(networkInterfaces()).flatMap((items) => (items || []).filter((item) => item.family === "IPv4" && !item.internal).map((item) => item.address));
     const hostAgentEnabled = Boolean(cliproxyUrl && cliproxyApiKey) && await agentLauncherAvailable();
-    res.json({ advertisedHost: process.env.CANVAS_COLLAB_ADVERTISE_HOST || addresses[0] || "", aiProxyEnabled: Boolean(cliproxyUrl && cliproxyApiKey), hostAgentEnabled });
+    res.json({ advertisedHost: process.env.CANVAS_COLLAB_ADVERTISE_HOST || addresses[0] || "", aiProxyEnabled: Boolean(cliproxyUrl && cliproxyApiKey), hostAgentEnabled, hostCodexLoginEnabled: Boolean(cliproxyManagementUrl && cliproxyManagementKey), teamLoginRequired: teamSessions.required });
+});
+
+app.get("/collaboration/host-codex-auth", async (_req, res) => {
+    if (!cliproxyManagementKey) return res.status(503).json({ error: "Host CLIProxy management is not configured" });
+    try {
+        const response = await fetch(`${cliproxyManagementUrl}/v0/management/codex-auth-url`, { headers: { Authorization: `Bearer ${cliproxyManagementKey}` } });
+        const result = await response.json();
+        if (!response.ok || typeof result.url !== "string" || typeof result.state !== "string") return res.status(502).json({ error: "Could not start Codex login" });
+        codexLoginState = result.state;
+        res.json({ url: result.url });
+    } catch {
+        res.status(502).json({ error: "Host CLIProxy is unavailable" });
+    }
+});
+
+app.post("/collaboration/host-codex-auth/callback", express.json({ limit: "8kb" }), async (req, res) => {
+    if (!cliproxyManagementKey || !codexLoginState) return res.status(404).json({ error: "No Codex login is pending" });
+    try {
+        const callback = new URL(String(req.body?.redirectUrl || ""));
+        if (callback.protocol !== "http:" || !["localhost", "127.0.0.1"].includes(callback.hostname) || callback.port !== "1455" || callback.pathname !== "/auth/callback" || callback.searchParams.get("state") !== codexLoginState || !callback.searchParams.get("code")) return res.status(400).json({ error: "粘贴的地址不是当前 Codex 登录回调地址" });
+        const response = await fetch(`${cliproxyManagementUrl}/v0/management/oauth-callback`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: "codex", redirect_url: callback.toString() }) });
+        const result = await response.json();
+        if (!response.ok || result.status !== "ok") return res.status(502).json({ error: String(result.error || "Codex authorization failed") });
+        codexLoginState = "";
+        res.json({ status: "ok" });
+    } catch {
+        res.status(400).json({ error: "无法解析登录回调地址；请粘贴浏览器地址栏中的完整 URL" });
+    }
 });
 
 app.post("/collaboration/rooms", async (req, res) => {
@@ -133,6 +178,11 @@ app.get("/collaboration/rooms/:roomId/assets/:assetKey", (req, res) => {
 });
 
 server.on("upgrade", (req, socket, head) => {
+    if (teamSessions.required && !teamSessions.isAuthenticated(req)) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+    }
     let match;
     try {
         match = new URL(req.url || "", "http://localhost").pathname.match(/^\/collaboration\/rooms\/([\w-]+)\/socket$/);
@@ -461,7 +511,8 @@ async function loadCliproxyConfig() {
         const apiKey = Array.isArray(keys) ? String(keys.find((value) => typeof value === "string" && value.trim()) || "").trim() : "";
         if (!host || !Number.isInteger(port) || port < 1 || port > 65535 || !apiKey) return null;
         const protocol = config?.tls?.enable === true ? "https" : "http";
-        return { url: protocol + "://" + host + ":" + port, apiKey };
+        const managementKey = String(config?.["remote-management"]?.["secret-key"] || "").trim();
+        return { url: protocol + "://" + host + ":" + port, apiKey, managementKey };
     } catch {
         return null;
     }

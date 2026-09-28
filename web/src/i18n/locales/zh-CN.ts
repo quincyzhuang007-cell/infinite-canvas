@@ -240,7 +240,7 @@ export default {
         undo: "撤销",
         redo: "重做",
         openMenu: "打开画布菜单",
-        collaboration: { share: "共享", connecting: "连接中", peopleOnline: "{{count}} 人协作", connectionError: "共享画布连接异常", dialogTitle: "局域网共享画布", inviteHint: "画布节点、连线和媒体自动保存到主机并同步。普通链接由每人使用自己的本地 Agent；主机 Codex 链接共用主机上的 Agent。画布生图固定走主机 CLIProxy；个人视口和本地 Agent 会话仍各自独立。", inviteLink: "邀请链接", localAgentLink: "各自使用本地 Agent", hostAgentLink: "使用主机 CLIProxy Codex Agent", copyHostAgentLink: "复制主机 Codex 链接", imageProxyRequired: "主机 CLIProxy 未连接，画布生图已禁用", copyLink: "复制链接", inviteCopied: "邀请链接已复制", copyFailed: "复制失败，请手动复制", shareFailed: "创建共享链接失败", localOnly: "仅本机", connected: "已连接", onlineCount: "当前 {{count}} 人在线", rememberedTitle: "最近加入的共享画布", rememberedHint: "这些入口保存在当前浏览器中；重新打开后可继续从主机读取画布。", reopen: "重新进入", readFailed: "无法读取此浏览器保存的共享画布入口，请检查站点存储权限。" },
+        collaboration: { share: "共享", connecting: "连接中", peopleOnline: "{{count}} 人协作", connectionError: "共享画布连接异常", dialogTitle: "共享画布", inviteHint: "画布节点、连线和媒体自动保存到共享主机并同步，成员可通过链接远程协作。普通链接由每人使用自己的本地 Agent；主机 Codex 链接共用主机上的 Agent。画布生图固定走主机 CLIProxy；个人视口和本地 Agent 会话仍各自独立。", inviteLink: "邀请链接", localAgentLink: "各自使用本地 Agent", hostAgentLink: "使用主机 CLIProxy Codex Agent", copyHostAgentLink: "复制主机 Codex 链接", imageProxyRequired: "主机 CLIProxy 未连接，画布生图已禁用", copyLink: "复制链接", inviteCopied: "邀请链接已复制", copyFailed: "复制失败，请手动复制", shareFailed: "创建共享链接失败", localOnly: "仅本机", connected: "已连接", onlineCount: "当前 {{count}} 人在线", rememberedTitle: "最近加入的共享画布", rememberedHint: "这些入口保存在当前浏览器中；重新打开后可继续从主机读取画布。", reopen: "重新进入", readFailed: "无法读取此浏览器保存的共享画布入口，请检查站点存储权限。" },
         renameHint: "双击修改画布名称",
         shortcuts: "快捷键",
         miniMapOpen: "打开小地图",
