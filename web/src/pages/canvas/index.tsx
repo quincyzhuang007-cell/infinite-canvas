@@ -1,6 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { App, Button } from "antd";
+import { Alert, App, Button } from "antd";
 import { Download, FileUp, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -14,6 +14,7 @@ import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { hasAgentUrlBootstrap } from "@/lib/agent/agent-url-bootstrap";
+import { listRememberedSharedRooms, rememberedSharedRoomPath, type RememberedSharedRoom } from "@/services/collaboration";
 
 export default function CanvasPage() {
     const { message } = App.useApp();
@@ -28,6 +29,8 @@ export default function CanvasPage() {
     const importProject = useCanvasStore((state) => state.importProject);
     const selectedIds = useCanvasUiStore((state) => state.selectedProjectIds);
     const setDeleteIds = useCanvasUiStore((state) => state.setDeleteProjectIds);
+    const [sharedRooms, setSharedRooms] = useState<RememberedSharedRoom[]>([]);
+    const [sharedRoomsError, setSharedRoomsError] = useState(false);
 
     const mode = searchParams.get("mode");
     const agentMode = mode === "new" || mode === "recent" || mode === "choose";
@@ -69,6 +72,23 @@ export default function CanvasPage() {
         enterProject(mode === "new" ? createProject(t("canvas.defaultTitle", { count: projects.length + 1 })) : projects[0]?.id || createProject(t("canvas.defaultTitle", { count: projects.length + 1 })));
     }, [createProject, hydrated, mode, projects, t]);
 
+    useEffect(() => {
+        let active = true;
+        const refresh = () => void listRememberedSharedRooms().then((rooms) => {
+            if (!active) return;
+            setSharedRooms(rooms);
+            setSharedRoomsError(false);
+        }).catch(() => { if (active) setSharedRoomsError(true); });
+        refresh();
+        window.addEventListener("storage", refresh);
+        window.addEventListener("focus", refresh);
+        return () => {
+            active = false;
+            window.removeEventListener("storage", refresh);
+            window.removeEventListener("focus", refresh);
+        };
+    }, []);
+
     if (hydrated && (mode === "new" || mode === "recent")) return <main className="flex h-full items-center justify-center bg-background text-sm text-stone-500">{t("canvas.opening")}</main>;
 
     return (
@@ -103,6 +123,24 @@ export default function CanvasPage() {
                         </Button>
                     </div>
                 </header>
+
+                {sharedRoomsError ? <Alert type="warning" showIcon message={t("canvas.collaboration.readFailed")} /> : null}
+
+                {sharedRooms.length ? (
+                    <section>
+                        <h2 className="text-xl font-semibold">{t("canvas.collaboration.rememberedTitle")}</h2>
+                        <p className="mt-1 text-sm text-stone-500">{t("canvas.collaboration.rememberedHint")}</p>
+                        <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                            {sharedRooms.map((room) => (
+                                <article key={room.roomId} className="rounded-2xl border border-stone-200 p-5 dark:border-stone-800">
+                                    <h3 className="truncate text-lg font-semibold">{room.title}</h3>
+                                    <p className="mt-2 text-sm text-stone-500">{room.agentMode === "host" ? t("canvas.collaboration.hostAgentLink") : t("canvas.collaboration.localAgentLink")}</p>
+                                    <Button className="mt-5" onClick={() => navigate(rememberedSharedRoomPath(room))}>{t("canvas.collaboration.reopen")}</Button>
+                                </article>
+                            ))}
+                        </div>
+                    </section>
+                ) : null}
 
                 {!hydrated ? (
                     <section className="flex min-h-[360px] items-center justify-center border-y border-stone-200 text-sm text-stone-500 dark:border-stone-800">{t("canvas.loading")}</section>

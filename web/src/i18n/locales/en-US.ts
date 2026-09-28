@@ -240,6 +240,7 @@ export default {
         undo: "Undo",
         redo: "Redo",
         openMenu: "Open canvas menu",
+        collaboration: { share: "Share", connecting: "Connecting", peopleOnline: "{{count}} collaborating", connectionError: "Shared canvas connection failed", dialogTitle: "Share on your local network", inviteHint: "Canvas nodes, connections, and media are saved on and synced through the host. The regular link lets each person use their own local Agent; the host Codex link shares the host Agent. Canvas image generation uses only the host CLIProxy. Personal viewports and local Agent sessions stay separate.", inviteLink: "Invite link", localAgentLink: "Use each person's local Agent", hostAgentLink: "Use the host CLIProxy Codex Agent", copyHostAgentLink: "Copy host Codex link", imageProxyRequired: "Host CLIProxy is unavailable; canvas image generation is disabled.", copyLink: "Copy link", inviteCopied: "Invite link copied", copyFailed: "Copy failed. Copy the link manually.", shareFailed: "Could not create a share link", localOnly: "Local only", connected: "Connected", onlineCount: "{{count}} people online", rememberedTitle: "Recent shared canvases", rememberedHint: "These links are saved in this browser. Reopen one to load its canvas from the host.", reopen: "Reopen", readFailed: "Could not read shared canvas shortcuts saved in this browser. Check this site's storage permissions." },
         renameHint: "Double-click to rename the canvas",
         shortcuts: "Keyboard shortcuts",
         miniMapOpen: "Open minimap",

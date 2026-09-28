@@ -29,6 +29,14 @@ http://localhost:3000
 docker compose -f docker-compose.local.yml up -d --build
 ```
 
+## 局域网协作画布
+
+源码部署的 `docker-compose.local.yml` 会额外启动协作服务，画布快照保存在 `canvas-collaboration` 卷中。单条同步消息上限为 32 MB，单个媒体文件上限为 500 MB；媒体由服务端流式写入磁盘。
+
+部署到局域网时，将 `CANVAS_COLLAB_ADVERTISE_HOST` 设为运行 Docker 主机的局域网 IP。若要共享主机 CLIProxy，需要把 CLIProxy 配置文件以只读方式挂载进 `collaboration` 容器，并将 `CANVAS_COLLAB_CLIPROXY_CONFIG` 指向容器内路径；Docker Desktop 下还需将 `CANVAS_COLLAB_CLIPROXY_URL` 设为容器可访问的 `http://host.docker.internal:8317`。当前协作容器未打包 Canvas Agent 启动文件，因此 Docker 模式暂不提供主机 Codex Agent 邀请；需要此能力时请在主机上从源码直接运行协作服务。
+
+普通邀请仍使用每位成员自己的本地 Agent；原生运行协作服务时，单独的主机 Agent 邀请会为每位成员创建独立的 Codex 对话。共享画布的生图只走主机 CLIProxy。不要把 CLIProxy API Key 或成员的 Agent 会话凭证提交到仓库或发进邀请链接。
+
 ## 文档站镜像
 
 文档站位于 `docs/` 目录，按带服务端能力的 Next.js standalone 应用单独构建，不打进主应用镜像。

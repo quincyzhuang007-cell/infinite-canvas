@@ -21,6 +21,14 @@ Open `http://localhost:3000`.
 docker compose -f docker-compose.local.yml up -d --build
 ```
 
+## LAN collaboration
+
+The source deployment in `docker-compose.local.yml` also starts a collaboration service. Room snapshots persist in the `canvas-collaboration` volume. Each sync message is limited to 32 MB and each media file to 500 MB; media is streamed to disk by the server.
+
+For LAN access, set `CANVAS_COLLAB_ADVERTISE_HOST` to the Docker host's LAN IP. To share the host CLIProxy, mount its configuration file read-only into the `collaboration` container and point `CANVAS_COLLAB_CLIPROXY_CONFIG` at that path. With Docker Desktop, also set `CANVAS_COLLAB_CLIPROXY_URL` to a container-reachable address such as `http://host.docker.internal:8317`. The current collaboration image does not bundle the Canvas Agent launcher, so Docker mode does not yet offer host Codex Agent invites; run the collaboration service from source on the host to use that mode.
+
+Regular invites keep each member's own local Agent; when the collaboration service runs natively, a separate host-Agent invite gives each member an independent Codex conversation. Image generation in a shared canvas is routed only through the host CLIProxy. Never commit the CLIProxy API key or a participant's Agent session credential, or include either in invite links.
+
 ## Documentation image
 
 The documentation in `docs/` is a separate Next.js standalone application with server capabilities.

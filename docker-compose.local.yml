@@ -1,4 +1,17 @@
 services:
+  collaboration:
+    image: infinite-canvas-collaboration:local
+    build:
+      context: collaboration-server
+    environment:
+      CANVAS_COLLAB_DATA_DIR: /app/data
+      CANVAS_COLLAB_ADVERTISE_HOST: ${CANVAS_COLLAB_ADVERTISE_HOST:-}
+      CANVAS_COLLAB_CLIPROXY_URL: ${CANVAS_COLLAB_CLIPROXY_URL:-}
+      CANVAS_COLLAB_CLIPROXY_API_KEY: ${CANVAS_COLLAB_CLIPROXY_API_KEY:-}
+      CANVAS_COLLAB_CLIPROXY_CONFIG: ${CANVAS_COLLAB_CLIPROXY_CONFIG:-}
+    volumes:
+      - canvas-collaboration:/app/data
+    restart: unless-stopped
   app:
     image: infinite-canvas:local
     build:
@@ -7,3 +20,8 @@ services:
     ports:
       - "3000:3000"
     restart: unless-stopped
+    depends_on:
+      - collaboration
+
+volumes:
+  canvas-collaboration:

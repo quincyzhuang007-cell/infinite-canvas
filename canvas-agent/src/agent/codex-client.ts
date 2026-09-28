@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse as parseYaml } from "yaml";
 
 import { createAgentLogWriter } from "../utils/agent-runtime.js";
 import { VERSION } from "../config.js";
@@ -21,6 +23,9 @@ type PendingTurnStart = { threadId: string; prompt: string; messageText?: string
 
 const canvasAgentMcp = canvasAgentMcpCommand();
 const require = createRequire(import.meta.url);
+const cliproxyFromConfig = loadCliproxyConfig();
+if (!process.env.CANVAS_AGENT_CLIPROXY_BASE_URL && cliproxyFromConfig?.baseUrl) process.env.CANVAS_AGENT_CLIPROXY_BASE_URL = cliproxyFromConfig.baseUrl;
+if (!process.env.CANVAS_AGENT_CLIPROXY_API_KEY && cliproxyFromConfig?.apiKey) process.env.CANVAS_AGENT_CLIPROXY_API_KEY = cliproxyFromConfig.apiKey;
 const STREAM_UPDATE_INTERVAL_MS = 40;
 const supplementalItemTypes = new Set(["agent_message", "reasoning", "plan", "mcp_tool_call", "command_execution", "file_change", "dynamic_tool_call", "collab_tool_call", "web_search", "image_view", "image_generation", "context_compaction"]);
 const SKILL_DRAFT_INSTRUCTIONS = "你只负责根据已提供的对话或画布快照生成可编辑的 Codex Skill 草稿。不要调用任何工具，不要执行命令，不要读取文件，不要访问网络，不要修改任何状态。严格按 outputSchema 返回结果，并排除凭证、密钥、Token、本地路径、临时错误、调试日志和一次性结果。";
@@ -784,7 +789,27 @@ function canvasAgentMcpCommand() {
 
 /** 生成 Codex app-server 使用的 MCP 配置。 */
 function codexConfig(permissionMode: AgentPermissionMode) {
-    return { model_reasoning_summary: "auto", ...(permissionMode === "automatic" ? { approvals_reviewer: "auto_review" } : {}), mcp_servers: { "infinite-canvas": { command: canvasAgentMcp.command, args: canvasAgentMcp.args, default_tools_approval_mode: "approve", startup_timeout_sec: 20, tool_timeout_sec: 90 } } };
+    const cliproxyUrl = process.env.CANVAS_AGENT_CLIPROXY_BASE_URL?.trim().replace(/\/+$/, "");
+    const cliproxyKey = process.env.CANVAS_AGENT_CLIPROXY_API_KEY?.trim();
+    const cliproxy = cliproxyUrl && cliproxyKey ? { model_provider: "canvas_cliproxy", model_providers: { canvas_cliproxy: { name: "CLIProxyAPI", base_url: cliproxyUrl, wire_api: "responses", env_key: "CANVAS_AGENT_CLIPROXY_API_KEY" } } } : {};
+    return { model_reasoning_summary: "auto", ...(permissionMode === "automatic" ? { approvals_reviewer: "auto_review" } : {}), ...cliproxy, mcp_servers: { "infinite-canvas": { command: canvasAgentMcp.command, args: canvasAgentMcp.args, default_tools_approval_mode: "approve", startup_timeout_sec: 20, tool_timeout_sec: 90 } } };
+}
+
+function loadCliproxyConfig() {
+    const configPath = process.env.CANVAS_AGENT_CLIPROXY_CONFIG?.trim();
+    if (!configPath) return null;
+    try {
+        const config = parseYaml(readFileSync(path.resolve(configPath), "utf8"));
+        const host = String(config?.host || "127.0.0.1").trim();
+        const port = Number(config?.port || 8317);
+        const keys = config?.["api-keys"];
+        const apiKey = Array.isArray(keys) ? String(keys.find((value: unknown) => typeof value === "string" && value.trim()) || "").trim() : "";
+        if (!host || !Number.isInteger(port) || port < 1 || port > 65535 || !apiKey) return null;
+        const protocol = config?.tls?.enable === true ? "https" : "http";
+        return { baseUrl: protocol + "://" + host + ":" + port + "/v1", apiKey };
+    } catch {
+        return null;
+    }
 }
 
 function threadSettings(permissionMode: AgentPermissionMode) {

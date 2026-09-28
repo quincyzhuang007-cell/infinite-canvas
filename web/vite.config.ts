@@ -41,6 +41,11 @@ function localPluginsManifest(): Plugin {
 export default defineConfig({
     base: process.env.VITE_BASE || "/",
     plugins: [react(), localPluginsManifest()],
+    server: {
+        proxy: {
+            "/collaboration": { target: "http://127.0.0.1:17372", ws: true },
+        },
+    },
     resolve: {
         alias: {
             "@": resolve(webDir, "src"),

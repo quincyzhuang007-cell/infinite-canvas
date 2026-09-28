@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
 import { readAgentUrlBootstrap } from "@/lib/agent/agent-url-bootstrap";
+import { localForageStorage } from "@/lib/localforage-storage";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
 import { imageMetadata } from "@/lib/canvas/canvas-node-factory";
@@ -15,6 +16,7 @@ import { resolveCanvasReferenceImages } from "@/lib/canvas/canvas-resource-refer
 import { readImageMeta } from "@/lib/image-utils";
 import { randomId } from "@/lib/utils";
 import { uploadImage } from "@/services/image-storage";
+import { CollaborationHttpError, registerHostAgentSession } from "@/services/collaboration";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useAgentSkillStore } from "@/stores/use-agent-skill-store";
 import { useShallow } from "zustand/react/shallow";
@@ -76,6 +78,23 @@ const AGENT_PROTOCOL_VERSION = 6;
 const HISTORY_RETRY_DELAYS_MS = [0, 150, 350, 700, 1200];
 const AGENT_REASONING_EFFORTS = new Set<AgentReasoningEffort>(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 const rt = (key: string, options?: Record<string, unknown>) => i18n.t(`agent.runtime.${key}`, options);
+const hostAgentSessions = new Map<string, Promise<string>>();
+
+function acquireHostAgentSession(roomId: string, inviteToken: string) {
+    const key = `${roomId}:${inviteToken}`;
+    const pending = hostAgentSessions.get(key);
+    if (pending) return pending;
+    const next = (async () => {
+        const storageKey = `infinite-canvas:host-agent:${roomId}`;
+        const participantToken = await localForageStorage.getItem(storageKey) || undefined;
+        const session = await registerHostAgentSession(roomId, inviteToken, participantToken);
+        await localForageStorage.setItem(storageKey, session.participantToken);
+        return new URL(session.agentUrl, window.location.origin).toString();
+    })();
+    hostAgentSessions.set(key, next);
+    void next.then(() => hostAgentSessions.delete(key), () => hostAgentSessions.delete(key));
+    return next;
+}
 
 type AgentWorkspace = { workspacePath: string; activeThreadId?: string };
 type AgentThreadsResponse = { ok?: boolean; workspace?: AgentWorkspace; conversation?: AgentConversationState; data?: AgentThreadSummary[] };
@@ -191,7 +210,20 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     const threadOperationRef = useRef(0);
     const threadOperationSequenceRef = useRef(0);
     const endpoint = useMemo(() => url.trim().replace(/\/$/, ""), [url]);
-    const urlAgentAutoConnect = searchParams.has("agentUrl") && searchParams.has("agentToken");
+    const hostAgentMode = searchParams.get("agentMode") === "host";
+    const hostRoomId = searchParams.get("collab") || "";
+    const hostInviteToken = searchParams.get("invite") || "";
+    const hostSessionKey = `${hostRoomId}:${hostInviteToken}`;
+    const [readyHostSessionKey, setReadyHostSessionKey] = useState("");
+    const hostSessionPending = hostAgentMode && readyHostSessionKey !== hostSessionKey;
+    const urlAgentAutoConnect = !hostAgentMode && searchParams.has("agentUrl") && searchParams.has("agentToken");
+    useLayoutEffect(() => {
+        if (!hostAgentMode || !searchParams.has("agentUrl") && !searchParams.has("agentToken")) return;
+        const cleaned = new URL(window.location.href);
+        cleaned.searchParams.delete("agentUrl");
+        cleaned.searchParams.delete("agentToken");
+        navigate(`${cleaned.pathname}${cleaned.search}${cleaned.hash}`, { replace: true });
+    }, [hostAgentMode, navigate, searchParams]);
     useEffect(() => {
         let disposed = false;
         void acquireAgentClientId().then((clientId) => {
@@ -318,6 +350,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     }, [applyConversationState, applyWorkspaceChange, endpoint, loadThreadSnapshot, setAgentState, token]);
     // Imperatively subscribe to canvasContext to keep the ref current and debounce snapshot reports without rerendering the panel.
     useEffect(() => {
+        if (hostSessionPending) return;
         let timer: ReturnType<typeof setTimeout> | null = null;
         const unsubscribe = useAgentStore.subscribe((state) => {
             if (state.canvasContext === canvasContextRef.current) return;
@@ -330,7 +363,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             unsubscribe();
             if (timer) clearTimeout(timer);
         };
-    }, [endpoint, token]);
+    }, [endpoint, hostSessionPending, token]);
     useEffect(() => {
         confirmToolsRef.current = confirmTools;
     }, [confirmTools]);
@@ -340,9 +373,13 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     useEffect(() => () => attachmentUrlsRef.current.forEach((url) => URL.revokeObjectURL(url)), []);
 
     useEffect(() => {
-        if (!clientReady || !enabled || !token.trim()) return;
-        localStorage.setItem("canvas-agent-url", endpoint);
-        localStorage.setItem("canvas-agent-token", token);
+        if (hostSessionPending || !clientReady || !enabled || !token.trim()) return;
+        if (!hostAgentMode && endpoint.startsWith(window.location.origin + "/collaboration/rooms/")) return;
+        const sharedHostAgent = endpoint.startsWith(window.location.origin + "/collaboration/rooms/");
+        if (!sharedHostAgent) {
+            localStorage.setItem("canvas-agent-url", endpoint);
+            localStorage.setItem("canvas-agent-token", token);
+        }
         const clientId = clientIdRef.current;
         let disposed = false;
         let protocolRejected = false;
@@ -578,18 +615,18 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             loadThreadsSequenceRef.current += 1;
             useAgentSkillStore.getState().reset();
         };
-    }, [applyConversationState, applyWorkspaceChange, clientReady, enabled, endpoint, loadSkills, loadThreads, message, setAgentState, token]);
+    }, [applyConversationState, applyWorkspaceChange, clientReady, enabled, endpoint, hostAgentMode, hostSessionPending, loadSkills, loadThreads, message, setAgentState, token]);
 
     useEffect(() => {
-        if (connected) void loadThreads();
-    }, [connected, loadThreads]);
+        if (connected && !hostSessionPending) void loadThreads();
+    }, [connected, hostSessionPending, loadThreads]);
 
     useEffect(() => {
-        if (connected) void loadSkills(endpoint, token);
-    }, [connected, endpoint, loadSkills, token]);
+        if (connected && !hostSessionPending) void loadSkills(endpoint, token);
+    }, [connected, endpoint, hostSessionPending, loadSkills, token]);
 
     useEffect(() => {
-        if (!connected) return;
+        if (!connected || hostSessionPending) return;
         void fetchAgentJson<AgentModelsResponse>(endpoint, token, "/agent/codex/models").then(({ data = [] }) => {
             const names = new Set<string>();
             const models = data.flatMap((item) => {
@@ -610,10 +647,10 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             localStorage.setItem("canvas-agent-reasoning-effort", nextEffort);
             setAgentState({ models, model: current.model, reasoningEffort: nextEffort });
         }).catch((error) => addEventLog(rt("modelListFailed"), error));
-    }, [connected, endpoint, setAgentState, token]);
+    }, [connected, endpoint, hostSessionPending, setAgentState, token]);
 
     useEffect(() => {
-        if (!connected) return;
+        if (!connected || hostSessionPending) return;
         const activate = () => void activateAgentClient(endpoint, token, clientIdRef.current);
         const activateVisible = () => {
             if (document.visibilityState === "visible") activate();
@@ -624,7 +661,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             window.removeEventListener("focus", activate);
             document.removeEventListener("visibilitychange", activateVisible);
         };
-    }, [connected, endpoint, token]);
+    }, [connected, endpoint, hostSessionPending, token]);
     const sendPrompt = async () => {
         const text = prompt.trim();
         const files = attachments;
@@ -909,6 +946,25 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             clearAgentSession({ enabled: false, connected: false, activity: rt("offline"), connectError: "" });
             return;
         }
+        if (hostAgentMode) {
+            if (!hostRoomId || !hostInviteToken) {
+                setAgentState({ connectError: "共享画布链接缺少房间凭证" });
+                return;
+            }
+            setAgentState({ activity: rt("connecting"), connectError: "" });
+            try {
+                const agentUrl = await acquireHostAgentSession(hostRoomId, hostInviteToken);
+                clearAgentSession({ url: agentUrl, token: "browser-session", enabled: true, connected: false, silentConnect: silent, confirmTools: false, activity: rt("connecting"), connectError: "", activeTab: "chat" });
+                setReadyHostSessionKey(hostSessionKey);
+            } catch (error) {
+                const text = error instanceof CollaborationHttpError && error.status === 401
+                    ? "个人 Agent 会话无法恢复；请让主机检查协作数据目录和共享链接"
+                    : error instanceof Error ? error.message : "连接主机 Agent 失败";
+                setAgentState({ enabled: false, connected: false, connectError: text });
+                if (!silent && !headless) message.error(text);
+            }
+            return;
+        }
         const urlToken = searchParams.get("agentToken") || "";
         const urlEndpoint = searchParams.get("agentUrl") || "";
         const discovered = urlToken ? null : await discoverAgentConfig(endpoint || DEFAULT_AGENT_URL);
@@ -946,6 +1002,42 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     };
 
     useLayoutEffect(() => {
+        if (!hostAgentMode) return;
+        setReadyHostSessionKey("");
+        clearAgentSession({ url: "", token: "", enabled: false, connected: false, activity: rt("connecting"), connectError: "", activeTab: "setup" });
+        return () => clearAgentSession({
+            url: localStorage.getItem("canvas-agent-url") || DEFAULT_AGENT_URL,
+            token: localStorage.getItem("canvas-agent-token") || "",
+            enabled: false,
+            connected: false,
+            activity: rt("offline"),
+            connectError: "",
+        });
+    }, [hostAgentMode, hostSessionKey]);
+
+    useEffect(() => {
+        if (!hostAgentMode) return;
+        if (!hostRoomId || !hostInviteToken) {
+            setAgentState({ connectError: "共享画布链接缺少房间凭证" });
+            return;
+        }
+        let disposed = false;
+        void acquireHostAgentSession(hostRoomId, hostInviteToken).then((agentUrl) => {
+            if (disposed) return;
+            clearAgentSession({ url: agentUrl, token: "browser-session", enabled: true, connected: false, silentConnect: true, confirmTools: false, activity: rt("connecting"), connectError: "", activeTab: "chat" });
+            setReadyHostSessionKey(hostSessionKey);
+        }).catch((error) => {
+            if (disposed) return;
+            const text = error instanceof CollaborationHttpError && error.status === 401
+                ? "个人 Agent 会话无法恢复；请让主机检查协作数据目录和共享链接"
+                : error instanceof Error ? error.message : "连接主机 Agent 失败";
+            setAgentState({ enabled: false, connected: false, connectError: text, activeTab: "setup" });
+        });
+        return () => { disposed = true; };
+    }, [hostAgentMode, hostSessionKey]);
+
+    useLayoutEffect(() => {
+        if (hostAgentMode) return;
         const bootstrap = readAgentUrlBootstrap(hash);
         if (!bootstrap) return;
         navigate(`${window.location.pathname}${window.location.search}${bootstrap.remainingHash}`, { replace: true });
@@ -964,17 +1056,17 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         }
         errorLoggedRef.current = false;
         setAgentState({ url: bootstrap.url.replace(/\/$/, ""), token: bootstrap.token, enabled: true, connected: false, silentConnect: true, fragmentBootstrap: true, confirmTools: false, activity: rt("connecting"), connectError: "", activeTab: "setup" });
-    }, [hash, navigate, setAgentState]);
+    }, [hash, hostAgentMode, navigate, setAgentState]);
 
     useEffect(() => {
         if (urlAgentAutoConnect && confirmTools) setAgentState({ confirmTools: false });
     }, [confirmTools, setAgentState, urlAgentAutoConnect]);
 
     useEffect(() => {
-        if ((!autoConnect && !urlAgentAutoConnect) || autoConnectRef.current || enabled || connected) return;
+        if (hostAgentMode || (!autoConnect && !urlAgentAutoConnect) || autoConnectRef.current || enabled || connected) return;
         autoConnectRef.current = true;
         void toggleAgentConnection({ silent: true });
-    }, [autoConnect, connected, enabled, urlAgentAutoConnect]);
+    }, [autoConnect, connected, enabled, hostAgentMode, urlAgentAutoConnect]);
 
     function clearAgentSession(patch: Parameters<typeof setAgentState>[0] = {}) {
         loadThreadsSequenceRef.current += 1;
@@ -983,7 +1075,11 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         liveTurnKeysRef.current.clear();
         threadOperationRef.current = 0;
         setAgentState({
+            prompt: "",
+            attachments: [],
+            canvasReferences: [],
             messages: [],
+            eventLogs: [],
             tokenUsage: null,
             threads: [],
             activeThreadId: "",
@@ -1315,10 +1411,11 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
 
     const connectionStatus = t(connectError ? "agent.status.failed" : connected ? "agent.status.connected" : enabled ? "agent.status.connecting" : "agent.status.disconnected");
     const connectionStatusColor = connectError ? "#dc2626" : connected ? "#16a34a" : enabled ? "#d97706" : theme.node.muted;
+    const visibleTab = hostSessionPending ? "setup" : activeTab;
     const content = (
         <>
             <AgentPanelTabs
-                value={activeTab}
+                value={visibleTab}
                 theme={theme}
                 leading={
                     <div className="flex items-center gap-1">
@@ -1357,7 +1454,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                 }
             />
 
-            {activeTab === "setup" ? (
+            {visibleTab === "setup" ? (
                 <AgentConnectView
                     theme={theme}
                     url={url}
@@ -1370,9 +1467,9 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                     onTokenChange={(token) => setAgentState({ token, connectError: "" })}
                     onToggleEnabled={toggleAgentConnection}
                 />
-            ) : activeTab === "skills" ? (
+            ) : visibleTab === "skills" ? (
                 <AgentSkillsView clientId={clientIdRef.current} />
-            ) : activeTab === "history" ? (
+            ) : visibleTab === "history" ? (
                 <AgentHistoryView
                     theme={theme}
                     threads={threads}
@@ -1386,7 +1483,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                     onResumeThread={(threadId) => void resumeThread(threadId)}
                     onDeleteThreads={confirmDeleteThreads}
                 />
-            ) : activeTab === "log" ? (
+            ) : visibleTab === "log" ? (
                 <AgentLogView
                     logs={eventLogs}
                     theme={theme}

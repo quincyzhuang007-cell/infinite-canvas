@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, Bot, Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Trash2, Undo2, Upload } from "lucide-react";
+import { BookOpen, Bot, Download, Home, Images, Menu, PanelLeftClose, PanelLeftOpen, Plus, Redo2, Share2, Trash2, Undo2, Upload } from "lucide-react";
 import { Button, Dropdown, Modal, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 
@@ -28,6 +28,9 @@ export function CanvasTopBar({
     onOpenPlugins,
     onUndo,
     onRedo,
+    onShareCanvas,
+    collaborationStatus,
+    collaborators,
     agentOpen,
     compactAgentStatus,
     onToggleAgent,
@@ -50,6 +53,9 @@ export function CanvasTopBar({
     onOpenPlugins: () => void;
     onUndo: () => void;
     onRedo: () => void;
+    onShareCanvas: () => void;
+    collaborationStatus: "local" | "connecting" | "connected" | "error";
+    collaborators: number;
     agentOpen: boolean;
     compactAgentStatus: { connected: boolean; enabled: boolean; activity: string };
     onToggleAgent: () => void;
@@ -141,6 +147,9 @@ export function CanvasTopBar({
                 <div className="pointer-events-auto flex items-center gap-1.5">
                     <UserStatusActions variant="canvas" onOpenShortcuts={() => setShortcutsOpen(true)} onOpenPlugins={onOpenPlugins} />
                     <span className="h-6 w-px" style={{ background: theme.toolbar.border }} />
+                    <Button type="text" className="!h-10 !rounded-xl !px-3 !font-medium" icon={<Share2 className="size-4" />} onClick={onShareCanvas} title={collaborationStatus === "error" ? t("canvas.collaboration.connectionError") : undefined}>
+                        {collaborationStatus === "connected" ? t("canvas.collaboration.peopleOnline", { count: collaborators }) : collaborationStatus === "connecting" ? t("canvas.collaboration.connecting") : t("canvas.collaboration.share")}
+                    </Button>
                     <Button
                         type="text"
                         className="!h-10 !rounded-xl !px-3 !font-medium"

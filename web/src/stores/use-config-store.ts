@@ -76,6 +76,21 @@ const OPENAI_BASE_URL = "https://api.openai.com";
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
 export const LOCAL_PROXY_PACKAGE = "@basketikun/canvas-proxy";
 export const DEFAULT_LOCAL_PROXY_URL = "http://127.0.0.1:23210";
+const LOCAL_DIRECT_CHANNEL_ID = "local-direct";
+const localDirectChannel: ModelChannel | null = import.meta.env.VITE_LOCAL_DIRECT_BASE_URL && import.meta.env.VITE_LOCAL_DIRECT_API_KEY
+    ? {
+          id: LOCAL_DIRECT_CHANNEL_ID,
+          name: "Direct Wawazz",
+          baseUrl: import.meta.env.VITE_LOCAL_DIRECT_BASE_URL,
+          apiKey: import.meta.env.VITE_LOCAL_DIRECT_API_KEY,
+          apiFormat: "openai",
+          models: [
+              { name: "gpt-image-2", capability: "image" },
+              { name: "gpt-image-2.5-flare", capability: "image" },
+              { name: "gpt-image-2.5-sunburst", capability: "image" },
+          ],
+      }
+    : null;
 
 export const defaultConfig: AiConfig = {
     channelMode: "local",
@@ -96,6 +111,7 @@ export const defaultConfig: AiConfig = {
                 { name: "gpt-4o-mini-tts", capability: "audio" },
             ],
         },
+        ...(localDirectChannel ? [localDirectChannel] : []),
     ],
     model: "default::gpt-image-2",
     imageModel: "default::gpt-image-2",
@@ -113,7 +129,7 @@ export const defaultConfig: AiConfig = {
     videoMode: "frames",
     systemPrompt: "",
     reasoningEffort: "auto",
-    models: ["default::gpt-image-2", "default::grok-imagine-video", "default::gpt-5.5", "default::gpt-4o-mini-tts"],
+    models: ["default::gpt-image-2", "default::grok-imagine-video", "default::gpt-5.5", "default::gpt-4o-mini-tts", ...(localDirectChannel ? localDirectChannel.models.map((model) => `${LOCAL_DIRECT_CHANNEL_ID}::${model.name}`) : [])],
     quality: "auto",
     size: "1:1",
     background: "",
@@ -238,7 +254,23 @@ export const useConfigStore = create<ConfigStore>()(
         }),
         {
             name: CONFIG_STORE_KEY,
-            partialize: (state) => ({ config: state.config, webdav: state.webdav }),
+            partialize: (state) => {
+                const channels = state.config.channels.filter((channel) => !channel.id.startsWith("shared-room-"));
+                const withoutRoomModel = (value: string, fallback: string) => (decodeChannelModel(value)?.channelId.startsWith("shared-room-") ? fallback : value);
+                return {
+                    config: {
+                        ...state.config,
+                        channels,
+                        models: modelOptionsFromChannels(channels),
+                        model: withoutRoomModel(state.config.model, defaultConfig.model),
+                        imageModel: withoutRoomModel(state.config.imageModel, defaultConfig.imageModel),
+                        videoModel: withoutRoomModel(state.config.videoModel, defaultConfig.videoModel),
+                        textModel: withoutRoomModel(state.config.textModel, defaultConfig.textModel),
+                        audioModel: withoutRoomModel(state.config.audioModel, defaultConfig.audioModel),
+                    },
+                    webdav: state.webdav,
+                };
+            },
             merge: (persisted, current) => {
                 const persistedState = (persisted || {}) as Partial<ConfigStore>;
                 const persistedConfig = (persistedState.config || {}) as Partial<AiConfig>;
@@ -246,6 +278,11 @@ export const useConfigStore = create<ConfigStore>()(
                 const config = { ...defaultConfig, ...persistedConfig };
                 if (!Array.isArray(persistedConfig.channels)) config.channels = [];
                 const channels = normalizeChannels(config);
+                if (localDirectChannel) {
+                    const existingIndex = channels.findIndex((channel) => channel.id === LOCAL_DIRECT_CHANNEL_ID);
+                    if (existingIndex >= 0) channels[existingIndex] = localDirectChannel;
+                    else channels.push(localDirectChannel);
+                }
                 const models = modelOptionsFromChannels(channels);
                 return {
                     ...current,

@@ -10,7 +10,7 @@ import { CodexAppClient, CodexReportedError } from "./codex-client.js";
 import { codexEventHistory } from "./codex-event-history.js";
 import { settledTurnIds, summarizeCodexThread, threadMessages } from "./codex-history.js";
 import { messageMetadataStore } from "./message-metadata.js";
-import type { CodexReasoningEffort, CodexSkillMetadata, CodexSkillSelector, CodexSkillsListEntry } from "./codex-protocol.js";
+import type { CodexModel, CodexReasoningEffort, CodexSkillMetadata, CodexSkillSelector, CodexSkillsListEntry } from "./codex-protocol.js";
 import type { AgentAttachment, AgentEmit, AgentPermissionMode } from "./types.js";
 
 type CodexRunOptions = { threadId?: string; cwd?: string; permissionMode?: AgentPermissionMode; model?: string; effort?: CodexReasoningEffort; skill?: CodexSkillSelector; messageText?: string; appEmit?: AgentEmit; onStart?: () => void; onThread?: (threadId: string) => void; onTurn?: (turnId: string) => void; onFinish?: () => void };
@@ -117,9 +117,28 @@ export async function listCodexThreads(emit: AgentEmit, options: { cwd: string; 
     return { data, nextCursor: field(result, "nextCursor") || null, backwardsCursor: field(result, "backwardsCursor") || null };
 }
 
-/** 查询当前账号可用于新任务的 Codex 模型。 */
+/** 查询当前 Agent 实际使用的模型提供方，而不是只显示 Codex 内置目录。 */
 export async function listCodexModels(emit: AgentEmit) {
-    return await (await getCodexApp(emit)).listModels();
+    const app = await getCodexApp(emit);
+    const baseUrl = process.env.CANVAS_AGENT_CLIPROXY_BASE_URL?.trim().replace(/\/+$/, "");
+    const apiKey = process.env.CANVAS_AGENT_CLIPROXY_API_KEY?.trim();
+    if (!baseUrl || !apiKey) return await app.listModels();
+
+    const native = await app.listModels().catch(() => ({ data: [] as CodexModel[], nextCursor: null }));
+    const response = await fetch(`${baseUrl}/models`, { headers: { Authorization: `Bearer ${apiKey}` } });
+    if (!response.ok) throw new Error(`CLIProxy 模型列表获取失败（HTTP ${response.status}）`);
+    const models = field(await response.json(), "data");
+    if (!Array.isArray(models)) throw new Error("CLIProxy 返回的模型列表格式无效");
+
+    const nativeById = new Map(native.data.map((item) => [item.model, item]));
+    const seen = new Set<string>();
+    const data = models.flatMap((item): CodexModel[] => {
+        const id = field(item, "id");
+        if (typeof id !== "string" || !id || seen.has(id) || id === "codex-auto-review" || /(^|[-_])(image|audio|video|tts|transcribe|embedding|moderation|realtime|live)([-_]|$)/i.test(id)) return [];
+        seen.add(id);
+        return [nativeById.get(id) || { id, model: id, displayName: id, defaultReasoningEffort: "medium", supportedReasoningEfforts: [{ reasoningEffort: "medium" }] }];
+    }).sort((left, right) => right.model.localeCompare(left.model, "en", { numeric: true }));
+    return { data, nextCursor: null };
 }
 
 /** 查询当前工作空间的原生 Skill 列表。 */
@@ -184,6 +203,11 @@ async function mergeMessageMetadata<T extends { role: string; threadId: string; 
 /** 判断线程异常是否允许自动新建线程后重试。 */
 export function isRecoverableThreadError(error: unknown) {
     return /thread not loaded|no rollout found/i.test(errorMessage(error));
+}
+
+/** 分页历史目前只能读取摘要，不能完整读取或恢复；旧记录必须保留。 */
+export function isUnsupportedPaginatedThreadError(error: unknown) {
+    return /paginated threads do not support thread\/(?:read\(includeTurns=true\)|resume)/i.test(errorMessage(error));
 }
 
 /** 执行一次 Codex turn，并负责附件临时文件和线程恢复。 */

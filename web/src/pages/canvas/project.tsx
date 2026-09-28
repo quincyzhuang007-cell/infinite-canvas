@@ -20,7 +20,7 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
 import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { captureVideoFrame, type VideoFramePosition } from "@/lib/canvas/canvas-video-frame";
-import { App, Button, Modal } from "antd";
+import { Alert, App, Button, Input, Modal } from "antd";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
 import { ActiveConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasConfigComposer } from "@/components/canvas/canvas-config-composer";
@@ -46,6 +46,8 @@ import { useAgentStore } from "@/stores/use-agent-store";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
 import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
+import { useCanvasCollaboration } from "@/pages/canvas/hooks/use-canvas-collaboration";
+import { useCopyText } from "@/hooks/use-copy-text";
 import { buildNodeMentionReferences, getGroupResourceNodes, isCanvasReferenceNode, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
@@ -158,6 +160,7 @@ export default function CanvasPage() {
 function InfiniteCanvasPage() {
     const { message, modal } = App.useApp();
     const { t } = useTranslation();
+    const copyText = useCopyText();
     // Subscribe to the registry version so plugin registration changes rerender the canvas.
     const nodeRegistryVersion = useNodeRegistryVersion((state) => state.version);
     const params = useParams<{ id: string }>();
@@ -182,6 +185,8 @@ function InfiniteCanvasPage() {
     const applyingHistoryRef = useRef(false);
     const historyPausedRef = useRef(false);
     const didInitialCenterRef = useRef(false);
+    const loadedProjectIdRef = useRef("");
+    const remoteSequenceRef = useRef(0);
     const rafRef = useRef<number | null>(null);
     const nodeDraggingRef = useRef(false);
     const dragRef = useRef<{
@@ -214,6 +219,10 @@ function InfiniteCanvasPage() {
     const renameProject = useCanvasStore((state) => state.renameProject);
     const deleteProjects = useCanvasStore((state) => state.deleteProjects);
     const currentProject = useCanvasStore((state) => state.projects.find((project) => project.id === projectId));
+    const collaboration = useCanvasCollaboration(projectId, currentProject);
+    useEffect(() => {
+        if (collaboration.recoveryWarning) message.warning(collaboration.recoveryWarning);
+    }, [collaboration.recoveryWarning, message]);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [nodes, setNodes] = useState<CanvasNodeData[]>([]);
     const [connections, setConnections] = useState<CanvasConnection[]>([]);
@@ -246,6 +255,9 @@ function InfiniteCanvasPage() {
     const [pluginManagerOpen, setPluginManagerOpen] = useState(false);
     const [cropNodeId, setCropNodeId] = useState<string | null>(null);
     const [maskEditNodeId, setMaskEditNodeId] = useState<string | null>(null);
+    const [shareDialogOpen, setShareDialogOpen] = useState(false);
+    const [shareInviteLink, setShareInviteLink] = useState("");
+    const [shareHostAgentLink, setShareHostAgentLink] = useState("");
     const [splitNodeId, setSplitNodeId] = useState<string | null>(null);
     const [upscaleNodeId, setUpscaleNodeId] = useState<string | null>(null);
     const [superResolveNodeId, setSuperResolveNodeId] = useState<string | null>(null);
@@ -427,13 +439,16 @@ function InfiniteCanvasPage() {
     );
 
     useEffect(() => {
-        if (!hydrated) return;
+        if (!hydrated || loadedProjectIdRef.current === projectId) return;
         setProjectLoaded(false);
+        if (searchParams.has("collab") && collaboration.status === "connecting") return;
         const project = openProject(projectId);
         if (!project) {
+            if (collaboration.status === "connecting") return;
             navigate("/canvas", { replace: true });
             return;
         }
+        loadedProjectIdRef.current = projectId;
 
         const restore = async () => {
             const restoredNodes = await hydrateCanvasImages(resetInterruptedGeneration(project.nodes));
@@ -462,7 +477,45 @@ function InfiniteCanvasPage() {
             setProjectLoaded(true);
         };
         void restore();
-    }, [hydrated, navigate, openProject, projectId]);
+    }, [collaboration.status, currentProject, hydrated, navigate, openProject, projectId, searchParams]);
+
+    useEffect(() => {
+        const change = collaboration.remoteUpdate;
+        if (!projectLoaded || !change || change.sequence <= remoteSequenceRef.current || change.project.id !== projectId) return;
+        remoteSequenceRef.current = change.sequence;
+        applyingHistoryRef.current = true;
+        historyPausedRef.current = true;
+        setNodes(change.project.nodes);
+        setConnections(change.project.connections);
+        setBackgroundMode(change.project.backgroundMode);
+        setShowImageInfo(change.project.showImageInfo);
+        lastHistoryRef.current = {
+            nodes: change.project.nodes,
+            connections: change.project.connections,
+            chatSessions,
+            activeChatId,
+            backgroundMode: change.project.backgroundMode,
+            showImageInfo: change.project.showImageInfo,
+        };
+        historyRef.current = { past: [], future: [] };
+        setHistoryState({ canUndo: false, canRedo: false });
+        window.setTimeout(() => {
+            historyPausedRef.current = false;
+            applyingHistoryRef.current = false;
+        }, 0);
+    }, [activeChatId, chatSessions, collaboration.remoteUpdate, projectId, projectLoaded]);
+
+    const handleShareCanvas = async () => {
+        try {
+            const links = await collaboration.createInvitation();
+            setShareInviteLink(links.canvasLink);
+            setShareHostAgentLink(links.hostAgentLink);
+            setShareDialogOpen(true);
+            copyText(links.canvasLink, t("canvas.collaboration.inviteCopied"));
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : t("canvas.collaboration.shareFailed"));
+        }
+    };
 
     useEffect(() => {
         if (!projectLoaded) return;
@@ -473,7 +526,7 @@ function InfiniteCanvasPage() {
 
     useEffect(() => {
         if (!projectLoaded || !["new", "recent", "choose"].includes(searchParams.get("mode") || "")) return;
-        if (!searchParams.has("agentUrl") && !localAgentEnabled && !fragmentBootstrap) openAgentPanel();
+        if ((searchParams.get("agentMode") === "host" || !searchParams.has("agentUrl")) && !localAgentEnabled && !fragmentBootstrap) openAgentPanel();
     }, [fragmentBootstrap, localAgentEnabled, openAgentPanel, projectLoaded, searchParams]);
 
     useEffect(() => {
@@ -3129,10 +3182,33 @@ function InfiniteCanvasPage() {
                     onOpenPlugins={() => setPluginManagerOpen(true)}
                     onUndo={undoCanvas}
                     onRedo={redoCanvas}
+                    onShareCanvas={() => void handleShareCanvas()}
+                    collaborationStatus={collaboration.status}
+                    collaborators={collaboration.participants}
                     agentOpen={agentPanelOpen}
                     compactAgentStatus={{ connected: localAgentConnected, enabled: localAgentEnabled, activity: localAgentActivity }}
                     onToggleAgent={toggleAgentPanel}
                 />
+
+                <Modal title={t("canvas.collaboration.dialogTitle")} open={shareDialogOpen} onCancel={() => setShareDialogOpen(false)} footer={null} centered>
+                    <p className="mb-3 text-sm text-stone-500">{t("canvas.collaboration.inviteHint")}</p>
+                    {collaboration.recoveryWarning ? <Alert className="mb-3" type="warning" showIcon message={collaboration.recoveryWarning} /> : null}
+                    <div className="mb-2 text-xs text-stone-500">{t("canvas.collaboration.localAgentLink")}</div>
+                    <Input aria-label={t("canvas.collaboration.inviteLink")} value={shareInviteLink} readOnly onFocus={(event) => event.currentTarget.select()} />
+                    <div className="mt-3 flex items-center justify-between gap-3">
+                        <span className="text-xs text-stone-500">
+                            {collaboration.status === "connected" ? t("canvas.collaboration.onlineCount", { count: collaboration.participants }) : collaboration.status === "error" ? collaboration.error : collaboration.status === "connecting" ? t("canvas.collaboration.connecting") : t("canvas.collaboration.localOnly")}
+                        </span>
+                        <Button onClick={() => copyText(shareInviteLink, t("canvas.collaboration.inviteCopied"))}>{t("canvas.collaboration.copyLink")}</Button>
+                    </div>
+                    {shareHostAgentLink && <div className="mt-4 border-t pt-4" style={{ borderColor: theme.node.stroke }}>
+                        <div className="mb-2 text-xs text-stone-500">{t("canvas.collaboration.hostAgentLink")}</div>
+                        <Input aria-label={t("canvas.collaboration.hostAgentLink")} value={shareHostAgentLink} readOnly onFocus={(event) => event.currentTarget.select()} />
+                        <div className="mt-3 flex justify-end">
+                            <Button onClick={() => copyText(shareHostAgentLink, t("canvas.collaboration.inviteCopied"))}>{t("canvas.collaboration.copyHostAgentLink")}</Button>
+                        </div>
+                    </div>}
+                </Modal>
 
                 <InfiniteCanvas
                     containerRef={containerRef}
